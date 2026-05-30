@@ -1,8 +1,23 @@
 import os
 import streamlit as st
-from tenacity import retry, stop_after_attempt, wait_random_exponential
 import google.generativeai as genai
 import json
+
+GEMINI_MODEL_CHAIN = [
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+]
+
+_FALLBACK_ERROR_PHRASES = (
+    "429",
+    "quota",
+    "rate limit",
+    "resource exhausted",
+    "not found",
+    "503",
+)
+
 
 def main():
     set_page_config()
@@ -174,7 +189,6 @@ def write_ai_prod_desc():
             progress_bar.progress(100)
 
 
-@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
 def generate_text_with_exception_handling(prompt):
     """
     Generates text using the Gemini model with exception handling.
@@ -187,45 +201,52 @@ def generate_text_with_exception_handling(prompt):
         str: The generated text.
     """
 
-    try:
-        genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+    genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 
-        generation_config = {
-            "temperature": 0.7,
-            "top_k": 0,
-            "max_output_tokens": 4096,
-        }
+    generation_config = {
+        "temperature": 0.7,
+        "top_k": 0,
+        "max_output_tokens": 4096,
+    }
 
-        safety_settings = [
-            {
-                "category": "HARM_CATEGORY_HARASSMENT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-            },
-            {
-                "category": "HARM_CATEGORY_HATE_SPEECH",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-            },
-            {
-                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-            },
-            {
-                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-            },
-        ]
+    safety_settings = [
+        {
+            "category": "HARM_CATEGORY_HARASSMENT",
+            "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+        },
+        {
+            "category": "HARM_CATEGORY_HATE_SPEECH",
+            "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+        },
+        {
+            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+        },
+        {
+            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+            "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+        },
+    ]
 
-        model = genai.GenerativeModel(model_name="gemini-1.5-flash",
-                                      generation_config=generation_config,
-                                      safety_settings=safety_settings)
+    for model_id in GEMINI_MODEL_CHAIN:
+        try:
+            model = genai.GenerativeModel(
+                model_name=model_id,
+                generation_config=generation_config,
+                safety_settings=safety_settings,
+            )
+            convo = model.start_chat(history=[])
+            convo.send_message(prompt)
+            return convo.last.text
+        except Exception as e:
+            msg = str(e).lower()
+            if any(phrase in msg for phrase in _FALLBACK_ERROR_PHRASES):
+                continue
+            st.exception(e)
+            return None
 
-        convo = model.start_chat(history=[])
-        convo.send_message(prompt)
-        return convo.last.text
-
-    except Exception as e:
-        st.exception(f"An unexpected error occurred: {e}")
-        return None
+    st.error("All Gemini models are temporarily unavailable. Please try again later.")
+    return None
 
 
 if __name__ == "__main__":
